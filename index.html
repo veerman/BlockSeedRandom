@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="UTF-8">
+		<title>List Randomizer</title>
+		<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-KK94CHFLLe+nY2dmCWGMq91rCGa5gtU4mk92HdvYe+M/SXH301p5ILy+dN9+nJOZ" crossorigin="anonymous">
+		<style>
+			body {
+				font-family: "Courier New", Courier, monospace;
+			}
+			input, textarea, select {
+				font-family: inherit;
+			}
+			.hide {
+				display: none;
+			}
+		</style>
+		<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.2.3/ethers.umd.min.js"></script>
+		<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/seedrandom/3.0.5/seedrandom.min.js"></script>
+		<script type="text/javascript" src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/js/bootstrap.bundle.min.js"></script>
+		<script type="text/javascript" src="js/connections.js"></script>
+		<script type="text/javascript" src="js/randomize.js"></script>
+		<script>
+			// dynamically create dropdown/select options given a list object, optional 'selected' value, and optional flags to determine key/value usage
+			const populateDropdown = (list, selected, useKeyForValue = true, useKeyForText = false) => {
+				let dropdown = document.createElement('select');
+				for(let key in list){
+					let option = document.createElement('option');
+					option.value = useKeyForValue ? key : list[key];
+					option.text = useKeyForText ? key : list[key];
+					if (key == selected){
+						option.setAttribute('selected', 'selected');
+					}
+					dropdown.appendChild(option);
+				}
+				return dropdown.innerHTML;
+			}
+
+			const getEmptyKeys = (obj, keys) => {
+				let empty_keys = [];
+				keys.forEach((key, index) => {
+					if (!obj[key]){
+						empty_keys.push(key);
+					}
+				});
+				return empty_keys;
+			}
+
+
+			const startBlockInterval = () => {
+				clearInterval(block_current_interval); // clear previous interval if exists
+
+				getBlockCurrent(); // preliminary call before interval loops
+				let interval_ms = networks[form_data['network']]['abt'] ? (networks[form_data['network']]['abt'] * 1000) - 1000 : 10000;
+				//*
+				block_current_interval = setInterval(() => {
+					getBlockCurrent();
+				}, interval_ms);
+				//*/
+			}
+
+			const getBlockCurrent = async () => {
+				//console.log('get current block height from ' + form_data['network']);
+				var block_data = await getBlock(form_data['network'], null);
+				if (block_data.block){ // block exists
+					form_data['height_current'] = block_data['height'];
+					form_data['timestamp_current'] = block_data['timestamp'];
+
+					if (!target_reached){
+						if (form_data['height_current'] >= form_data['height']){ // current height matches target height or target height in the past
+							if (form_data['height_current'] > form_data['height']){ // target height in the past, fetch it
+								block_data = await getBlock(form_data['network'], form_data['height']);
+							}
+							if (block_data.block){ // block exists
+								target_reached = true;
+								form_data['timestamp_target'] = block_data['timestamp'];
+								form_data['status'] = 'Block reached!';
+							}
+						}
+						else{
+							form_data['status'] = 'Waiting for block...' + (form_data['height_current'] && form_data['height'] ? ' (' + (form_data['height'] - form_data['height_current']) + ' blocks remaining)' : '');
+						}
+
+						if (block_data.block){ // block exists
+							getSeedFromBlock(block_data.block);
+							document.getElementById('seed_label').innerHTML = 'Seed at Block Height ' + block_data['height'];
+						}
+					}
+
+					displayForm();
+				}
+			}
+
+			let block_current_interval;
+			let block_target_seconds = 10 * 60;
+			let target_reached = false;
+			let form_required = ['network', 'height', 'list_hash_actual', 'inputs_hash_actual'];
+			let form_data = new Proxy({}, {
+				set: function(obj, key, value) {
+					obj[key] = value;
+
+					let input_keys = form_required.filter(function(val){
+						return val !== 'inputs_hash_actual';
+					});
+					if (input_keys.includes(key)){
+						obj['inputs_hash_actual'] = (getEmptyKeys(form_data, input_keys).length === 0) ? ethers.sha256(ethers.toUtf8Bytes([obj['network'], obj['height'], obj['list_hash_actual']].join('_'))) : '';
+					}
+
+					if (key === 'list_input'){
+						let items = obj['list_input'].replace(/^\n+/, "").replace(/\n+/g, "\n").split("\n"); // remove newlines at beginning of list, and multiple newlines
+						items = items.map(str => str.trim()); // remove extra whitespace
+						obj['list_input'] = items.join("\n");
+						form_data['list_hash_actual'] = (obj['list_input'].trim().length > 0) ? ethers.sha256(ethers.toUtf8Bytes((obj['list_input'] + "\n").replace(/\n+/g, "\n"))) : ''; // ensure list ends in a newline, remove multiple if exist
+
+						if ((obj['list_input'].trim().length > 0) && obj['seed']){
+							getListOutput();
+						}
+					}
+
+					if (key === 'network'){
+						console.log('network');
+						obj['network_abt'] = networks[obj['network']]['abt'] ?? null;
+
+						provider = null;
+						startBlockInterval();
+						// to do: if you change network, must reset many other things, reset target height and date,
+					}
+
+					if (key === 'height_current'){
+						if (!form_data['height']){
+							form_data['height'] = parseInt(form_data['height_current']) + Math.floor(block_target_seconds / obj['network_abt']); // current + future
+						}
+					}
+
+					if (key === 'timestamp_current'){
+						//obj['datetime_current'] = new Date(obj['timestamp_current']);
+						obj['datetime_current'] = (new Date(obj['timestamp_current'])).toLocaleString("en-US", {timeZone: 'America/New_York', dateStyle: 'full', timeStyle: 'long'});
+						if (!form_data['timestamp_target']){
+							form_data['timestamp_target'] = obj['timestamp_current'] + (block_target_seconds * 1000);
+						}
+					}
+
+					if (key === 'timestamp_target'){
+						obj['datetime_target'] = new Date(obj['timestamp_target']);
+						obj['datetime_target_date'] = obj['datetime_target'].toISOString().split('T')[0];
+						obj['datetime_target_time'] = obj['datetime_target'].toTimeString().split(' ')[0];
+					}
+
+					if (key === 'datetime_target_date' || key === 'datetime_target_time'){
+						if (obj['datetime_target_date'] && obj['datetime_target_time']){
+							obj['datetime_target'] = new Date(obj['datetime_target_date'] + ' ' + obj['datetime_target_time']);
+
+
+							let seconds = (obj['datetime_target'].getTime() - obj['timestamp_current']) / 1000;
+							let blocks_quantity = Math.floor(seconds / obj['network_abt']);
+							obj['height'] = parseInt(obj['height_current']) + blocks_quantity; // current + future
+
+
+						}
+					}
+
+					if (key === 'height'){
+						target_reached = false; // reset target reached if target changed
+
+						if (obj['timestamp_current'] && obj['height_current'] && obj['network_abt']){
+							form_data['timestamp_target'] = obj['timestamp_current'] + ((obj['height'] - obj['height_current']) * obj['network_abt'] * 1000);
+						}
+
+					}
+
+					//console.log([key, value]);
+					return true;
+				}
+			});
+			let form_defaults = {
+				'network': 'flow'
+			}
+			Object.keys(form_defaults).forEach((key, index) => { // merge defaults
+				form_data[key] = form_defaults[key];
+			});
+			(new URLSearchParams(window.location.search)).forEach((value, key) => { // merge from query string
+				form_data[key] = value;
+			});
+
+			// form event listener callback, saves form input/changes to form_data
+			const formEvent = (id) => {
+				console.log('formEvent ' + id + ' with ' + document.getElementById(id).value);
+				form_data[id] = document.getElementById(id).value;
+				displayForm();
+			}
+
+			// set form values from form_data
+			const displayForm = () => {
+				Object.keys(form_data).forEach((key, index) => {
+					var element = document.getElementById(key);
+					if (element !== null){
+						if (['text', 'number', 'date', 'time', 'textarea'].includes(element.type)){
+							element.value = form_data[key];
+						}
+					}
+				});
+
+				if (form_data['list_hash_actual'] === form_data['list_hash']){
+					document.getElementById('list_hash').classList.replace('is-invalid', 'is-valid');
+				}
+				else{
+					document.getElementById('list_hash').classList.replace('is-valid', 'is-invalid');
+				}
+
+				if (form_data['inputs_hash_actual'] === form_data['inputs_hash']){
+					document.getElementById('inputs_hash').classList.replace('is-invalid', 'is-valid');
+				}
+				else{
+					document.getElementById('inputs_hash').classList.replace('is-valid', 'is-invalid');
+				}
+
+				document.getElementById('params_link').href = getParamsURL();
+				if (getEmptyKeys(form_data, form_required).length === 0){ // form has all required fields
+					document.getElementById('params_link').classList.remove('hide');
+				}
+				else{
+					document.getElementById('params_link').classList.add('hide');
+				}
+			}
+
+			const getParamsURL = () => {
+				let url_params = {
+					'network': form_data['network'],
+					'height': form_data['height'],
+					'list_hash': form_data['list_hash_actual'],
+					'inputs_hash': form_data['inputs_hash_actual']
+				};
+				Object.keys(url_params).forEach(key => url_params[key] === undefined ? delete url_params[key] : {}); // remove undefined values from object
+				return '?' + (new URLSearchParams(url_params).toString());
+			}
+
+			const getSeedFromBlock = (block) => {
+				var hex_strings = getHexStrings(block, ['id', 'parent_id', 'collection_id', 'hash', 'parentHash', 'miner']);
+
+				var substrings = getShuffledSubstrings(hex_strings);
+				const doSubstingMath = (substrings, callback) => {
+					let bin_arr = [];
+					substrings.forEach((substring, i) => {
+						bin_arr.push(callback(substring));
+					});
+					let bin = bin_arr.join('');
+					let decimal = parseInt(bin, 2); // convert bin to dec
+					console.log('binary: ' + bin + ' decimal: ' + decimal);
+					return decimal;
+				}
+
+				const dec_total = doSubstingMath(substrings, (substring) => {
+					return sumEvenOdd(substring);
+				});
+
+				/*
+				onst dec_count = doSubstingMath(substrings, (substring) => {
+					const frequency_EvenOdd = frequencyEvenOdd(substring);
+					return frequency_EvenOdd.even > frequency_EvenOdd.odd ? 0 : 1;
+				});
+				//*/
+
+				form_data['seed'] = dec_total;
+				getListOutput();
+			}
+
+
+
+
+			// initialize form (run once)
+			const initForm = () => {
+				document.getElementById('network').innerHTML = populateDropdown(networks, form_data['network'], true, true);
+				// hide/show form components/elements
+				// new form
+				if (!form_data['height']){ // no height defined, ie. new form
+					Array.from(document.querySelectorAll('form .new_form [disabled]')).forEach((val, key) => { // enabled editable forms
+						val.removeAttribute('disabled');
+					});
+					document.getElementById('datetime_target_label').innerHTML = 'Block Date (Target Estimate)';
+				}
+				// result form
+				if (form_data['height']){
+					Array.from(document.getElementsByClassName('result_form')).forEach((val, key) => { // show result form sections
+						val.classList.remove('hide');
+					});
+					document.getElementById('spacer').classList.add('hide');
+				}
+			}
+
+			document.addEventListener('DOMContentLoaded', () => {
+				load();
+			});
+			const load = async () => {
+				// add event listeners to link changes on form to form_data
+				let form = document.querySelector('form');
+				form.addEventListener('input', (event) => {
+					formEvent(event.target.id);
+				});
+				form.addEventListener('textarea', (event) => {
+					formEvent(event.target.id);
+				});
+				form.addEventListener('select', (event) => {
+					formEvent(event.target.id);
+				});
+
+				initForm();
+				//await startBlockInterval();
+			}
+
+			const sortList = () => {
+				let items = form_data['list_input'].split("\n");
+
+				//items = [...new Set(items)]; // remove duplicates
+
+				items = items.filter((str, index, self) => // remove duplicates (case insensitive)
+					index === self.findIndex(s => s.toLowerCase() === str.toLowerCase())
+				);
+
+				items.sort(); // sort alphabetically
+				form_data['list_input'] = items.join("\n");
+				displayForm();
+			}
+
+			const getListOutput = () => {
+				let items = (form_data['list_input'] ?? '').split("\n");
+				items = shuffleList(items, form_data['seed']);
+				form_data['list_output'] = items.join("\n");
+				displayForm();
+			}
+		</script>
+	</head>
+	<body>
+		<div class="container mt-5">
+			<h3>BlockSeed Random</h3>
+			<p>
+				Follow <a href="https://twitter.com/intangible_eth">@intangible_eth</a> on Twitter for updates/suggestions. Create <a href="https://intangible.market/random/">New List</a>
+			</p>
+			<form class="row g-3">
+				<div class="form-group">
+					<label for="list_input">List (Input)</label>
+					<textarea id="list_input" name="list_input" class="form-control" rows="10"></textarea>
+				</div>
+
+				<button type="button" class="btn btn-primary" onclick="sortList()">Sort List</button>
+
+				<div class="col-md-6">
+					<label for="list_hash_actual">List Hash (Actual): </label>
+					<input type="text" id="list_hash_actual" name="list_hash_actual" class="form-control form-control-sm" disabled>
+				</div>
+
+				<div class="col-md-6 result_form hide">
+					<label for="list_hash">List Hash (Expected):</label>
+					<input type="text" id="list_hash" name="list_hash" class="form-control form-control-sm is-invalid" disabled>
+				</div>
+
+				<div class="col-md-6" id="spacer">
+				</div>
+
+				<div class="col-md-6 new_form">
+					<label for="network">Network:</label>
+					<select id="network" name="network" class="form-control" disabled></select>
+				</div>
+
+				<div class="col-md-6">
+					<label for="network_abt">Avg Block Time (Estimate):</label>
+					<input type="number" id="network_abt" name="network_abt" class="form-control" disabled>
+				</div>
+
+				<div class="col-md-6">
+					<label for="height_current">Block Height (Latest):</label>
+					<input type="number" id="height_current" name="height_current" class="form-control" disabled>
+				</div>
+
+				<div class="col-md-6">
+					<label for="datetime_current">Block Date/Time (Latest):</label>
+					<input type="text" id="datetime_current" name="datetime_current" class="form-control" disabled>
+				</div>
+
+				<div class="col-md-6 new_form">
+					<label for="height">Block Height (Target):</label>
+					<input type="number" id="height" name="height" class="form-control" disabled>
+				</div>
+
+				<div class="col-md-6 new_form">
+					<label for="datetime_target_date" id="datetime_target_label">Block Date (Target):</label>
+					<div class="form-control">
+						<input type="date" id="datetime_target_date" name="datetime_target_date" disabled>
+						<input type="time" id="datetime_target_time" name="datetime_target_time" disabled>
+					</div>
+				</div>
+
+				<div class="col-md-6">
+					<label for="inputs_hash_actual">Inputs Hash (Actual):</label>
+					<input type="text" id="inputs_hash_actual" name="inputs_hash_actual" class="form-control form-control-sm" disabled>
+				</div>
+
+				<div class="col-md-6 result_form hide">
+					<label for="inputs_hash">Inputs Hash (Expected):</label>
+					<input type="text" id="inputs_hash" name="inputs_hash" class="form-control form-control-sm is-invalid" disabled>
+				</div>
+
+				<div class="form-group">
+					<label for="params_link">Link:</label>
+					<div>
+						<a target="_blank" id="params_link" class="hide">Form Parameters</a>
+					</div>
+				</div>
+
+				<div class="form-group">
+					<label for="status">Status:</label>
+					<input type="text" id="status" name="status" class="form-control" disabled>
+				</div>
+
+				<div class="form-group result_form">
+					<label for="seed" id="seed_label">Seed:</label>
+					<input type="text" id="seed" name="seed" class="form-control" disabled>
+				</div>
+
+				<div class="form-group result_form">
+					<label for="list_output">List (Output)</label>
+					<textarea id="list_output" name="list_output" class="form-control" rows="10" disabled></textarea>
+				</div>
+			</form>
+		</div>
+	</body>
+</html>
